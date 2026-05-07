@@ -1,0 +1,131 @@
+name: Fetch DebugBundle Bundle
+description: Fetch a DebugBundle incident bundle and reproduction artifact into .debugbundle/bundles/cloud and .debugbundle/bundles/cloud/reproductions.
+
+inputs:
+  incident-id:
+    description: Incident identifier to fetch from DebugBundle.
+    required: true
+  debugbundle-token:
+    description: DebugBundle member token with permission to fetch incident artifacts.
+    required: true
+  api-base-url:
+    description: Base DebugBundle API URL.
+    required: false
+    default: https://api.debugbundle.com
+  workspace-root:
+    description: Workspace path where the .debugbundle cloud cache should be written.
+    required: false
+    default: .
+
+outputs:
+  bundle-path:
+    description: Path to the fetched bundle JSON file.
+    value: ${{ steps.fetch.outputs.bundle-path }}
+  reproduction-path:
+    description: Path to the fetched reproduction JSON file.
+    value: ${{ steps.fetch.outputs.reproduction-path }}
+  reproduction-status:
+    description: Reproduction fetch status (available, pending, or not_found).
+    value: ${{ steps.fetch.outputs.reproduction-status }}
+
+runs:
+  using: composite
+  steps:
+    - id: fetch
+      shell: bash
+      env:
+        INPUT_INCIDENT_ID: ${{ inputs.incident-id }}
+        INPUT_DEBUGBUNDLE_TOKEN: ${{ inputs.debugbundle-token }}
+        INPUT_API_BASE_URL: ${{ inputs.api-base-url }}
+        INPUT_WORKSPACE_ROOT: ${{ inputs.workspace-root }}
+      run: |
+        node --input-type=module <<'EOF'
+        import { appendFileSync } from 'node:fs';
+        import { mkdir, writeFile } from 'node:fs/promises';
+        import { join } from 'node:path';
+
+        const incidentId = process.env.INPUT_INCIDENT_ID;
+        const token = process.env.INPUT_DEBUGBUNDLE_TOKEN;
+        const apiBaseUrl = (process.env.INPUT_API_BASE_URL ?? 'https://api.debugbundle.com').replace(/\/$/, '');
+        const workspaceRoot = process.env.INPUT_WORKSPACE_ROOT ?? '.';
+
+        if (!incidentId) {
+          throw new Error('incident-id input is required');
+        }
+
+        if (!token) {
+          throw new Error('debugbundle-token input is required');
+        }
+
+        const bundleDirectory = join(workspaceRoot, '.debugbundle', 'bundles', 'cloud');
+        const reproductionDirectory = join(bundleDirectory, 'reproductions');
+        const bundlePath = join(bundleDirectory, `${incidentId}.bundle.json`);
+        const reproductionPath = join(reproductionDirectory, `${incidentId}.reproduction.json`);
+
+        await mkdir(reproductionDirectory, { recursive: true });
+
+        function setOutput(name, value) {
+          appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${String(value)}\n`);
+        }
+
+        async function requestJson(relativePath) {
+          const response = await fetch(`${apiBaseUrl}${relativePath}`, {
+            headers: {
+              Accept: 'application/json',
+              Authorization: `Bearer ${token}`,
+            },
+          });
+
+          const text = await response.text();
+          let payload = null;
+
+          if (text.length > 0) {
+            try {
+              payload = JSON.parse(text);
+            } catch {
+              throw new Error(`Expected JSON from ${relativePath}, received: ${text.slice(0, 200)}`);
+            }
+          }
+
+          return { response, payload };
+        }
+
+        const bundleResult = await requestJson(`/v1/incidents/${incidentId}/bundle`);
+        if (!bundleResult.response.ok) {
+          throw new Error(`Bundle fetch failed with ${bundleResult.response.status}: ${JSON.stringify(bundleResult.payload)}`);
+        }
+
+        if (
+          bundleResult.payload !== null &&
+          typeof bundleResult.payload === 'object' &&
+          'status' in bundleResult.payload
+        ) {
+          throw new Error(`Bundle fetch returned non-ready status: ${JSON.stringify(bundleResult.payload)}`);
+        }
+
+        await writeFile(bundlePath, `${JSON.stringify(bundleResult.payload, null, 2)}\n`, 'utf8');
+
+        const reproductionResult = await requestJson(`/v1/incidents/${incidentId}/reproduction`);
+        let reproductionStatus = 'available';
+
+        if (reproductionResult.response.status === 404) {
+          reproductionStatus = 'not_found';
+        } else if (!reproductionResult.response.ok) {
+          throw new Error(
+            `Reproduction fetch failed with ${reproductionResult.response.status}: ${JSON.stringify(reproductionResult.payload)}`,
+          );
+        } else if (
+          reproductionResult.payload !== null &&
+          typeof reproductionResult.payload === 'object' &&
+          'status' in reproductionResult.payload &&
+          reproductionResult.payload.status === 'pending'
+        ) {
+          reproductionStatus = 'pending';
+        }
+
+        await writeFile(reproductionPath, `${JSON.stringify(reproductionResult.payload, null, 2)}\n`, 'utf8');
+
+        setOutput('bundle-path', bundlePath);
+        setOutput('reproduction-path', reproductionPath);
+        setOutput('reproduction-status', reproductionStatus);
+        EOF

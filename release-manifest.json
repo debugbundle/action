@@ -1,0 +1,15 @@
+{
+  "package": "debugbundle/action",
+  "publicRepository": "https://github.com/debugbundle/action",
+  "sourceDirectory": ".",
+  "distributionRef": "debugbundle/action@v1",
+  "requiredReleaseFiles": [
+    "action.yml",
+    "README.md",
+    "LICENSE",
+    "SECURITY.md",
+    "CHANGELOG.md",
+    ".github/workflows/ci.yml",
+    ".github/workflows/release.yml"
+  ]
+}

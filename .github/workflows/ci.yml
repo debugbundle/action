@@ -1,0 +1,44 @@
+name: Action CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate action distribution files
+        shell: bash
+        run: |
+          set -euo pipefail
+          node <<'EOF'
+          const { readFileSync, existsSync } = require('node:fs');
+
+          const manifest = JSON.parse(readFileSync('release-manifest.json', 'utf8'));
+          for (const fileName of manifest.requiredReleaseFiles) {
+            if (!existsSync(fileName)) {
+              throw new Error(`Missing required release file: ${fileName}`);
+            }
+          }
+
+          const action = readFileSync('action.yml', 'utf8');
+          for (const required of ['incident-id', 'debugbundle-token', 'bundle-path', 'reproduction-path']) {
+            if (!action.includes(required)) {
+              throw new Error(`action.yml missing ${required}`);
+            }
+          }
+          EOF
+
+      - name: Validate documentation references
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'debugbundle/action@v1' README.md
+          grep -q 'repository_dispatch' README.md
