@@ -62,3 +62,7 @@ jobs:
 - Bundle fetches fail fast if the bundle endpoint returns a non-ready payload.
 - Reproduction fetches are written even when the artifact is still pending so later steps can branch on `reproduction-status`.
 - See the repository examples in `examples/github-actions/` for basic, agent-capable, and issue-creation workflow patterns.
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE).
