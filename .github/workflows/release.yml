@@ -14,6 +14,13 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+
+      - name: Verify artifact privacy boundary
+        run: node --test test/action.test.mjs
+
       - name: Validate release files
         shell: bash
         run: |
@@ -21,8 +28,11 @@ jobs:
           node <<'EOF'
           const { readFileSync, existsSync } = require('node:fs');
 
+          if (!/^v2\.\d+\.\d+$/.test(process.env.GITHUB_REF_NAME ?? '')) {
+            throw new Error('This privacy-protected candidate requires a v2 release tag');
+          }
           const manifest = JSON.parse(readFileSync('release-manifest.json', 'utf8'));
-          if (manifest.distributionRef !== 'debugbundle/action@v1') {
+          if (manifest.distributionRef !== 'debugbundle/action@v2') {
             throw new Error(`Unexpected distribution ref: ${manifest.distributionRef}`);
           }
 

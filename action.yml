@@ -1,5 +1,5 @@
 name: Fetch DebugBundle Bundle
-description: Fetch a DebugBundle incident bundle and reproduction artifact into .debugbundle/bundles/cloud and .debugbundle/bundles/cloud/reproductions.
+description: Fetch privacy-projected DebugBundle artifacts into the canonical cloud cache.
 
 inputs:
   incident-id:
@@ -41,16 +41,24 @@ runs:
       run: |
         node --input-type=module <<'EOF'
         import { appendFileSync } from 'node:fs';
-        import { mkdir, writeFile } from 'node:fs/promises';
+        import { mkdir, writeFile, rm } from 'node:fs/promises';
         import { join } from 'node:path';
 
         const incidentId = process.env.INPUT_INCIDENT_ID;
         const token = process.env.INPUT_DEBUGBUNDLE_TOKEN;
         const apiBaseUrl = (process.env.INPUT_API_BASE_URL ?? 'https://api.debugbundle.com').replace(/\/$/, '');
+        let origin;
+        try { origin = new URL(apiBaseUrl); } catch { throw new Error('Invalid DebugBundle API URL'); }
+        if (origin.username || origin.password || (origin.protocol !== 'https:' &&
+            !(origin.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(origin.hostname)))) {
+          throw new Error('Invalid DebugBundle API URL');
+        }
         const workspaceRoot = process.env.INPUT_WORKSPACE_ROOT ?? '.';
+        const policyVersion = 'telemetry-privacy-v1';
+        const maxArtifactBytes = 512 * 1024;
 
-        if (!incidentId) {
-          throw new Error('incident-id input is required');
+        if (!incidentId || !/^[A-Za-z0-9_-]{1,128}$/.test(incidentId)) {
+          throw new Error('incident-id input is invalid');
         }
 
         if (!token) {
@@ -62,28 +70,58 @@ runs:
         const bundlePath = join(bundleDirectory, `${incidentId}.bundle.json`);
         const reproductionPath = join(reproductionDirectory, `${incidentId}.reproduction.json`);
 
-        await mkdir(reproductionDirectory, { recursive: true });
+        await mkdir(reproductionDirectory, { recursive: true, mode: 0o700 });
+        // A failed fetch must not leave a previous unprotected artifact at the advertised path.
+        await rm(bundlePath, { force: true });
+        await rm(reproductionPath, { force: true });
 
         function setOutput(name, value) {
           appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${String(value)}\n`);
         }
 
         async function requestJson(relativePath) {
-          const response = await fetch(`${apiBaseUrl}${relativePath}`, {
+          let response;
+          try {
+          response = await fetch(`${apiBaseUrl}${relativePath}`, {
+            redirect: 'error', signal: AbortSignal.timeout(30_000),
             headers: {
               Accept: 'application/json',
               Authorization: `Bearer ${token}`,
             },
           });
+          } catch { throw new Error('DebugBundle artifact fetch unavailable'); }
 
-          const text = await response.text();
+          const length = Number(response.headers.get('content-length'));
+          if (Number.isFinite(length) && length > maxArtifactBytes) {
+            await response.body?.cancel();
+            throw new Error('DebugBundle artifact exceeds the privacy output limit');
+          }
+          const reader = response.body?.getReader();
+          const chunks = [];
+          let totalBytes = 0;
+          if (reader) {
+            try {
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                totalBytes += value.byteLength;
+                if (totalBytes > maxArtifactBytes) {
+                  throw new Error('DebugBundle artifact exceeds the privacy output limit');
+                }
+                chunks.push(value);
+              }
+            } finally {
+              await reader.cancel().catch(() => undefined);
+            }
+          }
+          const text = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks));
           let payload = null;
 
           if (text.length > 0) {
             try {
               payload = JSON.parse(text);
             } catch {
-              throw new Error(`Expected JSON from ${relativePath}, received: ${text.slice(0, 200)}`);
+              throw new Error('DebugBundle returned an invalid artifact response');
             }
           }
 
@@ -92,18 +130,21 @@ runs:
 
         const bundleResult = await requestJson(`/v1/incidents/${incidentId}/bundle`);
         if (!bundleResult.response.ok) {
-          throw new Error(`Bundle fetch failed with ${bundleResult.response.status}: ${JSON.stringify(bundleResult.payload)}`);
+          throw new Error(`Bundle fetch failed with HTTP ${bundleResult.response.status}`);
         }
 
-        if (
-          bundleResult.payload !== null &&
-          typeof bundleResult.payload === 'object' &&
-          'status' in bundleResult.payload
-        ) {
-          throw new Error(`Bundle fetch returned non-ready status: ${JSON.stringify(bundleResult.payload)}`);
+        if (bundleResult.payload === null || typeof bundleResult.payload !== 'object' || Array.isArray(bundleResult.payload)) {
+          throw new Error('Bundle fetch returned an invalid artifact');
+        }
+        if ('status' in bundleResult.payload) {
+          throw new Error('Bundle fetch returned non-ready status');
         }
 
-        await writeFile(bundlePath, `${JSON.stringify(bundleResult.payload, null, 2)}\n`, 'utf8');
+        if (bundleResult.response.headers.get('x-debugbundle-privacy-policy') !== policyVersion) {
+          throw new Error('Bundle response lacks the required privacy projection');
+        }
+
+        await writeFile(bundlePath, `${JSON.stringify(bundleResult.payload, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
 
         const reproductionResult = await requestJson(`/v1/incidents/${incidentId}/reproduction`);
         let reproductionStatus = 'available';
@@ -111,9 +152,7 @@ runs:
         if (reproductionResult.response.status === 404) {
           reproductionStatus = 'not_found';
         } else if (!reproductionResult.response.ok) {
-          throw new Error(
-            `Reproduction fetch failed with ${reproductionResult.response.status}: ${JSON.stringify(reproductionResult.payload)}`,
-          );
+          throw new Error(`Reproduction fetch failed with HTTP ${reproductionResult.response.status}`);
         } else if (
           reproductionResult.payload !== null &&
           typeof reproductionResult.payload === 'object' &&
@@ -123,7 +162,14 @@ runs:
           reproductionStatus = 'pending';
         }
 
-        await writeFile(reproductionPath, `${JSON.stringify(reproductionResult.payload, null, 2)}\n`, 'utf8');
+        if (reproductionStatus === 'available' && (reproductionResult.payload === null || typeof reproductionResult.payload !== 'object' || Array.isArray(reproductionResult.payload))) {
+          throw new Error('Reproduction response is invalid');
+        }
+        if (reproductionStatus === 'available' && reproductionResult.response.headers.get('x-debugbundle-privacy-policy') !== policyVersion) {
+          throw new Error('Reproduction response lacks the required privacy projection');
+        }
+
+        await writeFile(reproductionPath, `${JSON.stringify(reproductionStatus === 'available' ? reproductionResult.payload : { status: reproductionStatus }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
 
         setOutput('bundle-path', bundlePath);
         setOutput('reproduction-path', reproductionPath);

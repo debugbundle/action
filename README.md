@@ -2,7 +2,7 @@
 
 Reference GitHub Action for DebugBundle incident automation.
 
-Public distribution path: `debugbundle/action@v1`.
+Public distribution path: `debugbundle/action@v2`. Existing `@v1` workflows remain on the old major ref.
 
 This action fetches a DebugBundle incident bundle and reproduction artifact with a DebugBundle member token and writes them into the canonical cloud cache layout:
 
@@ -29,7 +29,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Fetch DebugBundle context
-        uses: debugbundle/action@v1
+        uses: debugbundle/action@v2
         with:
           incident-id: ${{ github.event.client_payload.incident_id }}
           debugbundle-token: ${{ secrets.DEBUGBUNDLE_TOKEN }}
@@ -61,6 +61,8 @@ jobs:
 - The action expects DebugBundle to trigger the workflow through `repository_dispatch` with `event_type: debugbundle.incident`.
 - Bundle fetches fail fast if the bundle endpoint returns a non-ready payload.
 - Reproduction fetches are written even when the artifact is still pending so later steps can branch on `reproduction-status`.
+- This major requires `telemetry-privacy-v1` on successful artifact responses. Deploy a compatible DebugBundle server first; older/self-hosted servers without the projection header are rejected before files are written. Error response bodies are not printed. The action does not grant a member token narrower permissions; use the restricted agent credential when that separate server feature becomes available.
+- The fetched artifact body is bounded to 512 KiB. The server sanitizes current and historical artifacts before setting the header; a response header alone cannot establish that an untrusted custom server actually scrubbed its content.
 - See the repository examples in `examples/github-actions/` for basic, agent-capable, and issue-creation workflow patterns.
 
 ## License

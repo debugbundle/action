@@ -2,7 +2,7 @@
   "package": "debugbundle/action",
   "publicRepository": "https://github.com/debugbundle/action",
   "sourceDirectory": ".",
-  "distributionRef": "debugbundle/action@v1",
+  "distributionRef": "debugbundle/action@v2",
   "requiredReleaseFiles": [
     "action.yml",
     "README.md",

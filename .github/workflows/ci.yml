@@ -40,5 +40,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          grep -q 'debugbundle/action@v1' README.md
+          grep -q 'debugbundle/action@v2' README.md
           grep -q 'repository_dispatch' README.md
+
+      - name: Test artifact privacy boundary
+        run: make test
