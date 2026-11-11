@@ -6,7 +6,7 @@ inputs:
     description: Incident identifier to fetch from DebugBundle.
     required: true
   debugbundle-token:
-    description: DebugBundle member token with permission to fetch incident artifacts.
+    description: DebugBundle access token with permission to fetch incident artifacts.
     required: true
   api-base-url:
     description: Base DebugBundle API URL.
